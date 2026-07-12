@@ -1,0 +1,13 @@
+[project]
+name = "sandbox-control-plane"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.139.0",
+    "kubernetes>=36.0.2",
+    "pydantic-settings>=2.14.2",
+    "temporalio>=1.30.0",
+    "uvicorn>=0.51.0",
+]
