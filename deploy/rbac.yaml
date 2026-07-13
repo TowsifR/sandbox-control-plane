@@ -1,0 +1,32 @@
+# The app runs in `sandbox-system` but writes `Sandbox` claims into the claim
+# namespace (`default`). So: a ServiceAccount here, a namespaced Role over there,
+# and a RoleBinding that grants this SA exactly those verbs — no cluster-admin.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox-control-plane
+  namespace: sandbox-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sandbox-claim-manager
+  namespace: default # SCP_CLAIM_NAMESPACE — where the claims live
+rules:
+  - apiGroups: ["platform.example.io"]
+    resources: ["sandboxes"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sandbox-control-plane-claim-manager
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: sandbox-control-plane
+    namespace: sandbox-system
+roleRef:
+  kind: Role
+  name: sandbox-claim-manager
+  apiGroup: rbac.authorization.k8s.io

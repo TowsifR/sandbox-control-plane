@@ -1,0 +1,15 @@
+# Sandbox Control Plane API + Swagger UI — http://sandbox.localtest.me
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: sandbox-control-plane-api
+  namespace: sandbox-system
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`sandbox.localtest.me`)
+      kind: Rule
+      services:
+        - name: sandbox-control-plane-api
+          port: 80

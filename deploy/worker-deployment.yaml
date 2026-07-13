@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-control-plane-worker
+  namespace: sandbox-system
+  labels:
+    app.kubernetes.io/name: sandbox-control-plane
+    app.kubernetes.io/component: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sandbox-control-plane
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sandbox-control-plane
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: sandbox-control-plane
+      containers:
+        - name: worker
+          image: sandbox-control-plane # tag is set by the images: block in kustomization.yaml
+          imagePullPolicy: IfNotPresent # image is side-loaded via `kind load`
+          command: ["python", "-m", "sandbox_control_plane.worker"]
+          envFrom:
+            - configMapRef:
+                name: sandbox-control-plane-config
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

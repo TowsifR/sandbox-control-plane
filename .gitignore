@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local environment / secrets (config.py reads env_file=".env")
+.env

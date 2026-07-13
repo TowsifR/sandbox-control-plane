@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-control-plane-api
+  namespace: sandbox-system
+  labels:
+    app.kubernetes.io/name: sandbox-control-plane
+    app.kubernetes.io/component: api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sandbox-control-plane
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sandbox-control-plane
+        app.kubernetes.io/component: api
+    spec:
+      serviceAccountName: sandbox-control-plane
+      containers:
+        - name: api
+          image: sandbox-control-plane # tag is set by the images: block in kustomization.yaml
+          imagePullPolicy: IfNotPresent # image is side-loaded via `kind load`
+          # default CMD runs uvicorn on :8000
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: sandbox-control-plane-config
+          readinessProbe:
+            # startup connects to Temporal in the lifespan; not ready until that's up
+            httpGet:
+              path: /openapi.json
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /openapi.json
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# No global `namespace:` — resources deliberately span two namespaces
+# (app in sandbox-system, claim RBAC in default), so each sets its own.
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - worker-deployment.yaml
+  - api-deployment.yaml
+  - api-service.yaml
+  - ingressroute.yaml
+
+# Generated (not a static file) so the name carries a content-hash — any change
+# mints a new name → updates the Deployments' refs → triggers a rolling restart.
+configMapGenerator:
+  - name: sandbox-control-plane-config
+    namespace: sandbox-system # no global namespace, so set it on the generator
+    literals:
+      - SCP_TEMPORAL_ADDRESS=temporal-frontend.temporal.svc.cluster.local:7233
+      - SCP_TEMPORAL_NAMESPACE=default
+      - SCP_TASK_QUEUE=sandbox-lifecycle
+      - SCP_CLAIM_NAMESPACE=default
+
+# Pin the image tag in one place; bump this when you rebuild.
+images:
+  - name: sandbox-control-plane
+    newTag: dev
