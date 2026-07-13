@@ -9,6 +9,9 @@ crashes and restarts.
 - It creates `platform.example.io` `Sandbox` **claims**; Crossplane reconciles the actual bundle
   (namespace / quota / netpol / pod). Temporal owns the *lifecycle*; Crossplane owns *reconciliation*.
 
+For the design rationale — the lifecycle workflow, the RBAC boundary, error handling, and the
+deployment choices — see **[docs/architecture.md](docs/architecture.md)**.
+
 ## Layout
 
 ```
