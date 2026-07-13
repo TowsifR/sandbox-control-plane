@@ -6,7 +6,9 @@ The kubernetes client is synchronous, so each call is offloaded with
 
 import asyncio
 
+from kubernetes.client.rest import ApiException
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
 from ..core.config import get_settings
 from ..core.kubernetes import get_kubernetes_client
@@ -21,7 +23,19 @@ def _gateway() -> SandboxGateway:
 @activity.defn
 async def create_sandbox_claim(params: LifecycleParams) -> None:
     gw = _gateway()
-    await asyncio.to_thread(gw.create, params.name, params.owner, params.size, params.image)
+    try:
+        await asyncio.to_thread(gw.create, params.name, params.owner, params.size, params.image)
+    except ApiException as e:
+        status = e.status or 0
+        # 4xx = the claim was rejected (policy/RBAC/schema); retrying can't help, so fail
+        # cleanly. 429/408 are transient throttle/timeout — let those retry. (409 never reaches here.)
+        if 400 <= status < 500 and status not in (408, 429):
+            raise ApplicationError(
+                f"Sandbox claim rejected ({status} {e.reason}): {e.body}",
+                type="ClaimRejected",
+                non_retryable=True,
+            ) from e
+        raise
 
 
 @activity.defn
