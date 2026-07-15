@@ -5,13 +5,64 @@ same one we later point at Kubernetes `pods/exec` — only the backing stream ch
 """
 
 import asyncio
+import fcntl
+import json
 import os
 import pty
 import signal
+import struct
+import termios
+from collections.abc import Awaitable, Callable
 
 from fastapi import WebSocket
 
 _READ_SIZE = 65536
+
+OnInput = Callable[[bytes], Awaitable[bool]]  # False = the stream is gone, stop
+OnControl = Callable[[bytes], Awaitable[None]]
+
+
+def _terminal_size(control: bytes) -> tuple[int, int] | None:
+    """Parse a control frame into (cols, rows); None if it isn't one."""
+    try:
+        msg = json.loads(control)
+        return int(msg["cols"]), int(msg["rows"])
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
+async def _bridge(
+    ws: WebSocket, outbound: asyncio.Queue[bytes], on_input: OnInput, on_control: OnControl
+) -> None:
+    """Pump `outbound` to the ws and ws frames to the stream until either ends — b"" is EOF.
+    Text frames are keystrokes; binary frames are control JSON ({"cols": N, "rows": N}), which
+    xterm.js never sends. Returns once one direction ends; the caller closes its own stream."""
+
+    async def to_ws() -> None:
+        while chunk := await outbound.get():
+            await ws.send_bytes(chunk)
+
+    async def from_ws() -> None:
+        while True:
+            msg = await ws.receive()
+            if msg["type"] == "websocket.disconnect":
+                return
+            if (control := msg.get("bytes")) is not None:
+                await on_control(control)
+            elif (text := msg.get("text")) and not await on_input(text.encode()):
+                return
+
+    tasks = [asyncio.create_task(to_ws()), asyncio.create_task(from_ws())]
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for task in pending:
+        task.cancel()
+    for task in done:
+        task.exception()  # the bridge is over either way; reading it just silences asyncio's warning
+
+
+def _set_winsize(fd: int, cols: int, rows: int) -> None:
+    # struct winsize is (rows, cols, xpixel, ypixel) — the order flips, it isn't a typo.
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
 async def _wait_writable(loop: asyncio.AbstractEventLoop, fd: int) -> None:
@@ -70,29 +121,19 @@ async def run_local_pty(ws: WebSocket, command: list[str] | None = None) -> None
 
     loop.add_reader(fd, on_readable)
 
-    async def pty_to_ws() -> None:
-        while chunk := await outbound.get():
-            await ws.send_bytes(chunk)
+    async def on_input(data: bytes) -> bool:
+        try:
+            await _write_all(loop, fd, data)
+        except OSError:  # pty closed (child exited) -> EIO
+            return False
+        return True
 
-    async def ws_to_pty() -> None:
-        while True:
-            msg = await ws.receive()
-            if msg["type"] == "websocket.disconnect":
-                return
-            data = msg.get("bytes")
-            if data is None and msg.get("text") is not None:
-                data = msg["text"].encode()
-            if data:
-                try:
-                    await _write_all(loop, fd, data)
-                except OSError:  # pty closed (child exited) -> EIO
-                    return
+    async def on_control(control: bytes) -> None:
+        if size := _terminal_size(control):
+            _set_winsize(fd, *size)
 
-    tasks = [asyncio.create_task(pty_to_ws()), asyncio.create_task(ws_to_pty())]
     try:
-        _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
+        await _bridge(ws, outbound, on_input, on_control)
     finally:
         loop.remove_reader(fd)
         os.close(fd)
