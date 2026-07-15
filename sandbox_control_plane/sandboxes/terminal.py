@@ -30,12 +30,8 @@ async def _wait_writable(loop: asyncio.AbstractEventLoop, fd: int) -> None:
 
 
 async def _write_all(loop: asyncio.AbstractEventLoop, fd: int, data: bytes) -> None:
-    """Write every byte to the non-blocking fd.
-
-    os.write can write only part of `data`, or raise BlockingIOError once the pty's
-    input buffer is full (a big paste outruns the shell) — so loop on the short count
-    and wait for writability instead of dropping the rest on the floor.
-    """
+    """Write every byte to the non-blocking fd — os.write can write short, or raise
+    BlockingIOError once the pty's input buffer fills (a big paste outruns the shell)."""
     view = memoryview(data)
     while view:
         try:
