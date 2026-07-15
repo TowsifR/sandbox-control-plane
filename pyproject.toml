@@ -10,4 +10,10 @@ dependencies = [
     "pydantic-settings>=2.14.2",
     "temporalio>=1.30.0",
     "uvicorn>=0.51.0",
+    "websockets>=16.1",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
 ]
