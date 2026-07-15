@@ -46,6 +46,9 @@ class SandboxService:
         handle = self._client.get_workflow_handle(sandbox_id)
         await handle.signal(SandboxLifecycle.request_delete)
 
+    async def pod_name(self, sandbox_id: str, namespace: str) -> str | None:
+        return await asyncio.to_thread(self._gateway.pod_name, namespace, sandbox_id)
+
     async def _phase(self, sandbox_id: str) -> str:
         try:
             handle = self._client.get_workflow_handle(sandbox_id)

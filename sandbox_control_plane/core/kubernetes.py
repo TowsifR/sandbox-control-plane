@@ -19,8 +19,13 @@ class KubernetesClient:
     def custom_objects(self) -> client.CustomObjectsApi:
         return client.CustomObjectsApi(self._api)
 
-    def core_v1(self) -> client.CoreV1Api:  # pods/exec — for the interactive terminal
+    def core_v1(self) -> client.CoreV1Api:
         return client.CoreV1Api(self._api)
+
+    def core_v1_exec(self) -> client.CoreV1Api:
+        """CoreV1Api on its own ApiClient, for `stream()` only — it swaps api_client.request, so
+        sharing would misroute concurrent REST calls. Shares the Configuration; caller closes it."""
+        return client.CoreV1Api(client.ApiClient(self._api.configuration))
 
 
 @lru_cache
