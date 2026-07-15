@@ -14,6 +14,38 @@ from fastapi import WebSocket
 _READ_SIZE = 65536
 
 
+async def _wait_writable(loop: asyncio.AbstractEventLoop, fd: int) -> None:
+    """Suspend until the pty accepts input again (its buffer drained)."""
+    future = loop.create_future()
+
+    def on_writable() -> None:
+        if not future.done():
+            future.set_result(None)
+
+    loop.add_writer(fd, on_writable)
+    try:
+        await future
+    finally:
+        loop.remove_writer(fd)
+
+
+async def _write_all(loop: asyncio.AbstractEventLoop, fd: int, data: bytes) -> None:
+    """Write every byte to the non-blocking fd.
+
+    os.write can write only part of `data`, or raise BlockingIOError once the pty's
+    input buffer is full (a big paste outruns the shell) — so loop on the short count
+    and wait for writability instead of dropping the rest on the floor.
+    """
+    view = memoryview(data)
+    while view:
+        try:
+            written = os.write(fd, view)
+        except BlockingIOError:
+            await _wait_writable(loop, fd)
+            continue
+        view = view[written:]
+
+
 async def run_local_pty(ws: WebSocket, command: list[str] | None = None) -> None:
     """Spawn `command` (argv; defaults to a shell) in a pty and bridge it to an accepted WebSocket."""
     candidates = [command] if command else [["/bin/bash"], ["/bin/sh"]]
@@ -55,7 +87,10 @@ async def run_local_pty(ws: WebSocket, command: list[str] | None = None) -> None
             if data is None and msg.get("text") is not None:
                 data = msg["text"].encode()
             if data:
-                os.write(fd, data)
+                try:
+                    await _write_all(loop, fd, data)
+                except OSError:  # pty closed (child exited) -> EIO
+                    return
 
     tasks = [asyncio.create_task(pty_to_ws()), asyncio.create_task(ws_to_pty())]
     try:
