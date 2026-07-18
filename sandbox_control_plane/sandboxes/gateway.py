@@ -8,6 +8,7 @@ GROUP = "platform.example.io"
 VERSION = "v1alpha1"
 PLURAL = "sandboxes"
 LABEL = f"{GROUP}/sandbox"  # stamped on the pod by the Composition
+CONTAINER = "main"  # the container the Composition puts the sandbox image in
 
 
 class SandboxGateway:

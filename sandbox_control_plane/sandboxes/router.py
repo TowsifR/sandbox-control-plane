@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
 
 from ..core.config import get_settings
+from ..core.kubernetes import get_kubernetes_client
+from .gateway import CONTAINER
 from .models import SandboxInfo, SandboxRequest
 from .service import SandboxService
-from .terminal import run_local_pty
+from .terminal import run_local_pty, run_pod_exec
 
 router = APIRouter(prefix="/sandboxes", tags=["sandboxes"])
 
@@ -52,5 +54,12 @@ async def sandbox_terminal(websocket: WebSocket, sandbox_id: str) -> None:
         return
     if get_settings().mode == "fake":
         await run_local_pty(websocket)  # local shell stands in for pods/exec
-    else:
-        await websocket.close(code=1011, reason="terminal not implemented in real mode yet")
+        return
+    if info.namespace is None:  # the composition hasn't published it yet
+        await websocket.close(code=1008, reason="sandbox has no namespace yet")
+        return
+    pod = await service.pod_name(sandbox_id, info.namespace)
+    if pod is None:
+        await websocket.close(code=1008, reason="sandbox pod not found")
+        return
+    await run_pod_exec(websocket, get_kubernetes_client(), info.namespace, pod, CONTAINER)
