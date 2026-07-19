@@ -25,12 +25,36 @@ export function TerminalPage() {
     const proto = location.protocol === "https:" ? "wss" : "ws"
     const ws = new WebSocket(`${proto}://${location.host}/api/sandboxes/${id}/terminal`)
     ws.binaryType = "arraybuffer"
-    ws.onopen = () => term.writeln("\x1b[90m— connected —\x1b[0m")
+
+    // Keystrokes go as text; the size goes as a binary frame so the shell can tell them apart.
+    const sendSize = () =>
+      ws.readyState === WebSocket.OPEN &&
+      ws.send(new TextEncoder().encode(JSON.stringify({ cols: term.cols, rows: term.rows })))
+
+    ws.onopen = () => {
+      term.writeln("\x1b[90m— connected —\x1b[0m")
+      sendSize() // fit.fit() already ran, but the socket wasn't open yet
+    }
     ws.onmessage = (e) =>
       term.write(typeof e.data === "string" ? e.data : new Uint8Array(e.data as ArrayBuffer))
     ws.onerror = () => term.writeln("\r\n\x1b[31m— connection error —\x1b[0m")
     ws.onclose = () => term.writeln("\r\n\x1b[90m— disconnected —\x1b[0m")
     term.onData((d) => ws.readyState === WebSocket.OPEN && ws.send(d))
+    term.onResize(sendSize) // fires only when fit.fit() actually changes the dimensions
+
+    // Copy on select and Ctrl/Cmd+V to paste — Ctrl+C stays as interrupt, like a real terminal.
+    // navigator.clipboard needs a secure context (localhost counts); it no-ops otherwise.
+    term.onSelectionChange(() => {
+      const sel = term.getSelection()
+      if (sel) navigator.clipboard?.writeText(sel).catch(() => {})
+    })
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type === "keydown" && (e.ctrlKey || e.metaKey) && e.key === "v" && navigator.clipboard) {
+        navigator.clipboard.readText().then((t) => term.paste(t)).catch(() => {})
+        return false // handled — don't also send Ctrl+V to the shell
+      }
+      return true
+    })
 
     const onResize = () => fit.fit()
     window.addEventListener("resize", onResize)
