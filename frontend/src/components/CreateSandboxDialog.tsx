@@ -22,7 +22,8 @@ import {
 import { api } from "@/lib/api"
 import type { Size } from "@/types"
 
-const IMAGES = ["busybox:1.36", "python:3.12-slim", "node:20-slim"]
+// Kept in step with the Kyverno allowlist (kubernetes-iac: sandbox-policies/image-allowlist.yaml).
+const IMAGES = ["busybox:1.36", "python:3.12-slim", "node:20-slim", "sandbox-opencode:dev"]
 
 export function CreateSandboxDialog({ onCreated }: { onCreated: () => void }) {
   const [open, setOpen] = useState(false)
