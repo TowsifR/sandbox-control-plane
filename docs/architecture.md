@@ -2,33 +2,39 @@
 
 The control plane that makes Temporal actually *drive* the `kind: Sandbox` platform API. It turns
 "create a sandbox" into a **durable lifecycle workflow** — provision → wait-ready → live for a TTL →
-clean up — that survives crashes and restarts.
+clean up — and then lets you **open a terminal into the running pod** (and run a coding agent in it)
+from a browser.
 
 It sits between two systems that already exist in the [`kubernetes-iac`](https://github.com/TowsifR/kubernetes-iac)
 platform:
 
 ```
-client ──HTTP──▶ API ──▶ Temporal workflow ──▶ platform.example.io/Sandbox claim
-                                                        │
-                              Kyverno admits/denies ◀───┤
-                                                        ▼
-                              Crossplane Composition reconciles the bundle
-                              (namespace · quota · limits · netpol · agent-sandbox pod)
+browser UI ─┬─ HTTP ───▶ API ──▶ Temporal workflow ──▶ platform.example.io/Sandbox claim
+            │                                                   │
+            │                         Kyverno admits/denies ◀───┤
+            │                                                   ▼
+            │                         Crossplane Composition reconciles the bundle
+            │                         (namespace · quota · limits · netpol · agent-sandbox pod)
+            │                                                   │
+            └─ WebSocket ─▶ API ── pods/exec ──────────────────▶ shell in the pod (+ opencode agent)
 ```
 
 > **Temporal owns the *lifecycle*. Crossplane owns *reconciliation*.** This app never touches the
 > bundle directly — it only writes `Sandbox` **claims**, and lets the platform's Composition do the work.
-> That boundary is the whole design.
+> That boundary is the whole design. The terminal is the one exception: once a pod exists, the API
+> execs into it directly — an interactive path, not a declarative one.
 
 ## The two moving parts
 
 | Process | File | What it does |
 |---|---|---|
-| **API** (FastAPI) | `app.py` + `sandboxes/router.py` | create / list / get / delete sandboxes; Swagger UI at `/docs` |
+| **API** (FastAPI) | `app.py` + `sandboxes/router.py` | create / list / get / delete sandboxes; the terminal WebSocket; Swagger UI at `/docs` |
 | **Worker** (Temporal) | `worker.py` | runs the `SandboxLifecycle` workflow and its Kubernetes activities |
+| **Frontend** (React + Vite) | `frontend/` | sandbox table, create dialog, and an xterm.js terminal wired to the API |
 
-Both are the **same image**, run with a different command. Both connect to Temporal; the worker also
-polls the task queue.
+API and worker are the **same image**, run with a different command; both connect to Temporal, and the
+worker also polls the task queue. The frontend is a separate SPA that talks to the API over `/api`
+(a Vite proxy in dev, an ingress in the cluster).
 
 ## The lifecycle workflow (`sandboxes/workflows.py`)
 
@@ -60,9 +66,10 @@ can report live status without its own bookkeeping.
 ```
 sandbox_control_plane/
 ├── core/         config · temporal client · generic kubernetes client   (reusable infra)
-├── sandboxes/    router · models · service · gateway · workflows · activities   (the domain)
+├── sandboxes/    router · models · service · gateway · workflows · activities · terminal   (the domain)
 ├── app.py        FastAPI app
 └── worker.py     Temporal worker
+frontend/         React + Vite SPA (table · create dialog · xterm.js terminal)
 ```
 
 - **`gateway.py` is the only `Sandbox`-CRD-aware code** — it speaks `platform.example.io/v1alpha1`
@@ -86,13 +93,67 @@ for *permanent* ones. `create_sandbox_claim` classifies the apiserver's response
 This mirrors how mature retry libraries classify: retry `429`/`408`/`5xx`, treat other `4xx` as fatal.
 (`409` never reaches the classifier — the gateway swallows it as idempotent.)
 
+## The terminal (`sandboxes/terminal.py`)
+
+`GET /sandboxes/{id}/terminal` is a WebSocket that gives the browser an interactive shell. The core is
+a single **bridge** (`_bridge`) that pumps bytes between the socket and a duplex stream until either
+end closes — the shape is deliberately backend-agnostic, so the *same* bridge serves two backends:
+
+| Mode | Backend | For |
+|---|---|---|
+| **fake** (`SCP_MODE=fake`) | a local pty (`pty.fork`) | UI/dev without a cluster |
+| **real** | Kubernetes `pods/exec` into the sandbox pod | the actual product |
+
+The API resolves the pod from the claim's `status.namespace` (never guessed) and a
+`platform.example.io/sandbox` label the Composition stamps, then execs `/bin/sh -c` with a one-liner
+that lands in **bash** where present and **sh** otherwise — and sets `TERM`, which exec doesn't inject.
+On an agent image it first prints how to start the agent (`opencode run <task>`), since opencode's
+full-screen TUI doesn't paint over the exec pty.
+
+Details that took real care:
+
+- **Wire protocol:** text frames are keystrokes, binary frames are control JSON (`{cols, rows}`).
+  xterm.js only ever sends text, so binary is unambiguous — that's how **resize** reaches the pod's
+  pty without a second channel.
+- **A dedicated `ApiClient` for exec.** `kubernetes.stream.stream()` monkey-patches the client's
+  `request` method to a WebSocket transport while it connects; sharing that client with the REST calls
+  would misroute a concurrent `GET /sandboxes`. `core_v1_exec()` hands exec its own client (shared
+  `Configuration`, so auth stays single-sourced).
+- **The official client mangles its own errors.** On a handshake failure (RBAC denial, bad container)
+  it raises `ApiException(body=None)`, and its own error path then calls `.decode()` on that `None` —
+  so what actually surfaces is an `AttributeError`. Errors are caught broadly and the apiserver's real
+  message is dug out of `__context__`, then drawn **in the terminal** (browsers don't show WS close
+  reasons).
+- **Teardown order is load-bearing:** stop the reader thread and `join` it *before* closing the exec
+  socket — closing an fd another thread is polling is a race.
+
+The frontend adds **copy-on-select and `Ctrl/Cmd+V` paste** (`Ctrl+C` stays as interrupt); clipboard
+needs a secure context, so it works on `localhost` and no-ops over plain-HTTP ingress.
+
+## Running the agent
+
+The sandbox image can be `sandbox-opencode` — [OpenCode](https://opencode.ai) on `node:22-slim`,
+non-root, idling on `sleep infinity` so the control plane can exec `opencode` or a shell into it. The
+platform delivers its API key without it ever touching git:
+
+```
+key → LocalStack Secrets Manager ──(ESO ClusterExternalSecret, per sandbox ns)──▶ Secret ──▶ OPENCODE_API_KEY
+```
+
+A `ClusterExternalSecret` syncs the key into every sandbox namespace, and the Composition mounts it as
+`OPENCODE_API_KEY` (required, not optional — the pod waits for it rather than start with a key it could
+never pick up). The value lives only in the secret store — the same pattern a real cluster uses with
+Secrets Manager + IRSA. LocalStack doesn't persist, so `kubernetes-iac/seed-secrets.sh` re-seeds it
+from a gitignored `.env` after a restart.
+
 ## Deployment (`deploy/`, Kustomize)
 
 The app runs in `sandbox-system`; the `Sandbox` claims live in the claim namespace (`default`).
 
 | Concern | Choice | Why |
 |---|---|---|
-| **RBAC** | SA in `sandbox-system`, namespaced `Role` in `default`, `RoleBinding` across | Least-privilege — the app can CRUD `Sandbox` claims in one namespace, **not** cluster-admin |
+| **RBAC (claims)** | SA in `sandbox-system`, namespaced `Role` in `default`, `RoleBinding` across | Least-privilege — the app can CRUD `Sandbox` claims in one namespace, **not** cluster-admin |
+| **RBAC (exec)** | static `ClusterRole` (platform side), bound per-sandbox by the Composition | Exec is scoped to sandbox namespaces and GC'd with them; a `ClusterRoleBinding` would grant a shell in *every* pod |
 | **Config** | `configMapGenerator` (hash-suffixed) | Any config change mints a new name → updates Deployment refs → **auto rolling-restart** (a static ConfigMap + `envFrom` goes silently stale) |
 | **Image tag** | single-sourced in the `images:` block | bump/retag in one place; the Deployments carry no tag |
 | **Image pull** | `imagePullPolicy: IfNotPresent` | image is side-loaded via `kind load` (no registry); `Always` would try to pull and fail |
@@ -124,6 +185,12 @@ The **proper** shape (deferred — see *Next*) separates the two health question
 - **Mutable `:dev` tag** is fine for `kind load`, but a GitOps anti-pattern (no change detection). Phase 3
   moves to immutable tags/digests.
 - **Claim namespace is defined twice** — the `Role`'s namespace and `SCP_CLAIM_NAMESPACE` must agree.
+- **Terminal-too-early race.** `phase` comes from the workflow, which reports `running` when the *claim*
+  goes Ready — a beat before the *pod* is Running (an image pull can widen the gap). Clicking the
+  terminal in that window returns a clean "pod not found", not a hang. A pod-aware readiness check would
+  close it.
+- **Every sandbox gets the Zen key**, even a plain busybox one that ignores it. The tidy refinement is
+  opt-in (a `spec.agent` field), which is an XRD change — deferred.
 
 ## Verification (end-to-end, in-cluster)
 
@@ -141,14 +208,25 @@ curl -sX POST http://sandbox.localtest.me/sandboxes \
   -H 'content-type: application/json' -d '{"owner":"eve","image":"ubuntu:22.04","ttl":60}'
 kubectl exec -n temporal deploy/temporal-admintools -- \
   temporal workflow describe -w <id> -n default       # Status FAILED (one attempt)
+
+# The terminal — exec into the pod and (on the opencode image) run the agent:
+#   open the UI, click the sandbox, or drive the WebSocket directly.
+kubectl exec -n sandbox-<id> sandbox -c main -- \
+  opencode run --model opencode/deepseek-v4-flash-free "say hi"   # authenticates via OPENCODE_API_KEY
 ```
+
+To run the whole thing locally against the cluster: `kubectl port-forward -n temporal
+svc/temporal-frontend 7233:7233`, then `uv run python -m sandbox_control_plane.worker`, `uv run uvicorn
+sandbox_control_plane.app:app`, and `npm run dev` in `frontend/` (its `/api` proxy targets the API).
 
 ## Next
 
 - **GitOps delivery** — push the image to `ghcr.io`, manage this repo's `deploy/` with **Argo CD** (the
   app-delivery plane, alongside the platform's Flux). Immutable image tags/digests.
 - **Startup resilience** — lazy Temporal connect + `/healthz` readiness + split liveness + `503`s.
-- **RBAC** — drop the unused `watch` verb; optional Pod Security Admission `restricted` labels.
+- **Pod-aware readiness** — close the terminal-too-early race by having `running` reflect the pod, not
+  just the claim.
+- **Opt-in agent** — a `spec.agent` field so only agent sandboxes get the Zen key and a default model.
 
 ## References
 
