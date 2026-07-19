@@ -32,12 +32,15 @@ _READ_SIZE = 65536
 _POLL = 0.2  # how long the reader thread blocks before rechecking `stop`
 _JOIN_TIMEOUT = 2.0
 
-# Exec injects no env, so TERM must be set here or bash assumes "dumb" — no colours, no `clear`.
-# One exec, no probe round-trip: busybox has ash but no bash, the -slim images have both.
-_SHELL = [
+# The terminal lands in a shell; on agent images it prints how to start the agent (opencode's TUI
+# doesn't paint over the exec pty). A per-sandbox persona will later override this via `command`.
+_LAUNCH = [
     "/bin/sh",
     "-c",
-    "export TERM=xterm-256color; command -v bash >/dev/null 2>&1 && exec bash || exec sh",
+    "export TERM=xterm-256color; "
+    "command -v opencode >/dev/null 2>&1 && "
+    "printf '\\n  OpenCode agent ready. Run:  opencode run <your task>\\n\\n'; "
+    "command -v bash >/dev/null 2>&1 && exec bash || exec sh",
 ]
 
 OnInput = Callable[[bytes], Awaitable[bool]]  # False = the stream is gone, stop
@@ -233,7 +236,7 @@ async def run_pod_exec(
             pod,
             namespace,
             container=container,
-            command=command or _SHELL,
+            command=command or _LAUNCH,
             stdin=True,
             stdout=True,
             stderr=False,  # the apiserver rejects stderr together with tty
