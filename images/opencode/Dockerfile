@@ -6,8 +6,9 @@
 FROM node:22-slim
 
 # git: agents edit real repos. ca-certificates: TLS to the model provider.
+# python3: the builder persona runs the code it writes (node already ships in the base).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git ca-certificates \
+        git ca-certificates python3 python-is-python3 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g opencode-ai@1.17.20
