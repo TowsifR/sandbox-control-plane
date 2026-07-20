@@ -27,6 +27,11 @@ class KubernetesClient:
         sharing would misroute concurrent REST calls. Shares the Configuration; caller closes it."""
         return client.CoreV1Api(client.ApiClient(self._api.configuration))
 
+    def core_v1_portforward(self) -> client.CoreV1Api:
+        """CoreV1Api on its own ApiClient for `stream.portforward` — same trap as core_v1_exec: the
+        stream helper swaps api_client.request, so it must not share the pooled client. Caller closes it."""
+        return client.CoreV1Api(client.ApiClient(self._api.configuration))
+
 
 @lru_cache
 def get_kubernetes_client() -> KubernetesClient:
