@@ -24,7 +24,9 @@ def _gateway() -> SandboxGateway:
 async def create_sandbox_claim(params: LifecycleParams) -> None:
     gw = _gateway()
     try:
-        await asyncio.to_thread(gw.create, params.name, params.owner, params.size, params.image)
+        await asyncio.to_thread(
+            gw.create, params.name, params.owner, params.size, params.image, params.persona
+        )
     except ApiException as e:
         status = e.status or 0
         # 4xx = the claim was rejected (policy/RBAC/schema); retrying can't help, so fail

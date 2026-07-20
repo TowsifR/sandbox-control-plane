@@ -21,14 +21,14 @@ class SandboxService:
     async def create(self, req: SandboxRequest) -> SandboxInfo:
         name = f"sb-{secrets.token_hex(4)}"
         params = LifecycleParams(
-            name=name, owner=req.owner, size=req.size, image=req.image, ttl=req.ttl
+            name=name, owner=req.owner, size=req.size, image=req.image, persona=req.persona, ttl=req.ttl
         )
         await self._client.start_workflow(
             SandboxLifecycle.run, params, id=name, task_queue=self._task_queue
         )
         # Claim isn't created until the workflow's first activity runs — report from the request.
         return SandboxInfo(
-            id=name, owner=req.owner, size=req.size, image=req.image, phase="provisioning"
+            id=name, owner=req.owner, size=req.size, image=req.image, persona=req.persona, phase="provisioning"
         )
 
     async def get(self, sandbox_id: str) -> SandboxInfo | None:
@@ -64,6 +64,7 @@ class SandboxService:
             owner=spec.get("owner", ""),
             size=spec.get("size", ""),
             image=spec.get("image", ""),
+            persona=spec.get("persona"),
             phase=phase,
             namespace=(claim.get("status") or {}).get("namespace"),
         )

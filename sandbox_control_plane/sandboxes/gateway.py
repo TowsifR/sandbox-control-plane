@@ -17,12 +17,16 @@ class SandboxGateway:
         self._core = k8s.core_v1()
         self._ns = namespace
 
-    def create(self, name: str, owner: str, size: str, image: str) -> None:
+    def create(self, name: str, owner: str, size: str, image: str, persona: str | None = None) -> None:
+        # image is always present (the claim schema defaults it); a persona, when set, overrides it.
+        spec = {"owner": owner, "size": size, "image": image}
+        if persona is not None:
+            spec["persona"] = persona
         body = {
             "apiVersion": f"{GROUP}/{VERSION}",
             "kind": "Sandbox",
             "metadata": {"name": name, "namespace": self._ns},
-            "spec": {"owner": owner, "size": size, "image": image},
+            "spec": spec,
         }
         try:
             self._api.create_namespaced_custom_object(GROUP, VERSION, self._ns, PLURAL, body)
