@@ -1,14 +1,12 @@
-import { type FormEvent, useState } from "react"
-import { Plus } from "lucide-react"
+import { type FormEvent, useEffect, useState } from "react"
 
-import { Button, buttonVariants } from "@/components/ui/button"
+import { Button } from "@/components/ui/button"
 import {
   Dialog,
   DialogContent,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -29,8 +27,17 @@ const IMAGES = ["busybox:1.36", "python:3.12-slim", "node:20-slim", "sandbox-ope
 
 type Mode = "persona" | "image"
 
-export function CreateSandboxDialog({ onCreated }: { onCreated: () => void }) {
-  const [open, setOpen] = useState(false)
+export function CreateSandboxDialog({
+  open,
+  onOpenChange,
+  onCreated,
+  presetPersona,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onCreated: () => void
+  presetPersona?: Persona
+}) {
   const [mode, setMode] = useState<Mode>("persona") // the flagship path; image is one click away
   const [owner, setOwner] = useState("")
   const [size, setSize] = useState<Size>("small")
@@ -38,6 +45,14 @@ export function CreateSandboxDialog({ onCreated }: { onCreated: () => void }) {
   const [image, setImage] = useState(IMAGES[0])
   const [ttl, setTtl] = useState(120)
   const [busy, setBusy] = useState(false)
+
+  // Opening from a persona tile preselects it; every open resets to persona mode.
+  useEffect(() => {
+    if (open) {
+      setMode("persona")
+      if (presetPersona) setPersona(presetPersona)
+    }
+  }, [open, presetPersona])
 
   const caps = personaById(persona)?.caps
 
@@ -47,7 +62,7 @@ export function CreateSandboxDialog({ onCreated }: { onCreated: () => void }) {
     try {
       // Send exactly one of persona/image — the platform uses whichever is present.
       await api.create({ owner, size, ttl, ...(mode === "persona" ? { persona } : { image }) })
-      setOpen(false)
+      onOpenChange(false)
       setOwner("")
       onCreated()
     } finally {
@@ -56,10 +71,7 @@ export function CreateSandboxDialog({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger className={buttonVariants({ size: "sm" })}>
-        <Plus className="mr-1 size-4" /> New Sandbox
-      </DialogTrigger>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>New sandbox</DialogTitle>

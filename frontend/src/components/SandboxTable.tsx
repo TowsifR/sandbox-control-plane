@@ -11,6 +11,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { StatusBadge } from "@/components/StatusBadge"
+import { personaById } from "@/lib/personas"
 import type { SandboxInfo } from "@/types"
 
 export function SandboxTable({
@@ -36,7 +37,7 @@ export function SandboxTable({
             <TableHead>ID</TableHead>
             <TableHead>Owner</TableHead>
             <TableHead>Size</TableHead>
-            <TableHead>Image</TableHead>
+            <TableHead>Flavor</TableHead>
             <TableHead>Status</TableHead>
             <TableHead className="text-right">Actions</TableHead>
           </TableRow>
@@ -47,7 +48,15 @@ export function SandboxTable({
               <TableCell className="font-mono text-xs">{s.id}</TableCell>
               <TableCell>{s.owner}</TableCell>
               <TableCell>{s.size}</TableCell>
-              <TableCell className="font-mono text-xs text-muted-foreground">{s.image}</TableCell>
+              <TableCell>
+                {s.persona ? (
+                  <span className="inline-flex items-center gap-1">
+                    {personaById(s.persona)?.emoji} {s.persona}
+                  </span>
+                ) : (
+                  <span className="font-mono text-xs text-muted-foreground">{s.image}</span>
+                )}
+              </TableCell>
               <TableCell>
                 <StatusBadge phase={s.phase} />
               </TableCell>
