@@ -2,6 +2,8 @@
 
 export type Size = "small" | "medium" | "large"
 
+export type Persona = "builder" | "architect"
+
 export type Phase = "provisioning" | "running" | "deleting" | "deleted" | "unknown"
 
 export interface SandboxInfo {
@@ -9,6 +11,7 @@ export interface SandboxInfo {
   owner: string
   size: string
   image: string
+  persona: string | null
   phase: string
   namespace: string | null
 }
@@ -16,6 +19,7 @@ export interface SandboxInfo {
 export interface SandboxRequest {
   owner: string
   size: Size
-  image: string
+  image?: string // sent in image mode
+  persona?: Persona // sent in persona mode — exactly one of image/persona
   ttl: number // seconds
 }
