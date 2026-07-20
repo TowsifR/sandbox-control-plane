@@ -30,7 +30,7 @@ browser UI ─┬─ HTTP ───▶ API ──▶ Temporal workflow ──▶
 |---|---|---|
 | **API** (FastAPI) | `app.py` + `sandboxes/router.py` | create / list / get / delete sandboxes; the terminal WebSocket; Swagger UI at `/docs` |
 | **Worker** (Temporal) | `worker.py` | runs the `SandboxLifecycle` workflow and its Kubernetes activities |
-| **Frontend** (React + Vite) | `frontend/` | sandbox table, create dialog, and an xterm.js terminal wired to the API |
+| **Frontend** (React + Vite) | `frontend/` | sandbox table, persona tiles + create dialog, and an xterm.js terminal |
 
 API and worker are the **same image**, run with a different command; both connect to Temporal, and the
 worker also polls the task queue. The frontend is a separate SPA that talks to the API over `/api`
@@ -132,9 +132,10 @@ needs a secure context, so it works on `localhost` and no-ops over plain-HTTP in
 
 ## Running the agent
 
-The sandbox image can be `sandbox-opencode` — [OpenCode](https://opencode.ai) on `node:22-slim`,
-non-root, idling on `sleep infinity` so the control plane can exec `opencode` or a shell into it. The
-platform delivers its API key without it ever touching git:
+The sandbox image can be `sandbox-opencode` — [OpenCode](https://opencode.ai) on `node:22-slim` (plus
+`git` and `python`, so the agent can run what it writes), non-root, idling on `sleep infinity` so the
+control plane can exec `opencode` or a shell into it. It's the image every persona runs on (see
+**Personas** below). The platform delivers its API key without it ever touching git:
 
 ```
 key → LocalStack Secrets Manager ──(ESO ClusterExternalSecret, per sandbox ns)──▶ Secret ──▶ OPENCODE_API_KEY
@@ -145,6 +146,38 @@ A `ClusterExternalSecret` syncs the key into every sandbox namespace, and the Co
 never pick up). The value lives only in the secret store — the same pattern a real cluster uses with
 Secrets Manager + IRSA. LocalStack doesn't persist, so `kubernetes-iac/seed-secrets.sh` re-seeds it
 from a gitignored `.env` after a restart.
+
+## Personas — the governed flavor catalog
+
+A **persona** turns "a sandbox" into a *task-scoped, governed* one. Instead of a raw image, the user
+picks a persona (what the sandbox is *for*); the platform derives the image and, crucially, **what the
+agent is allowed to do** — enforced in the pod where the user can't override it. Two ship:
+
+| Persona | edit | bash | for |
+|---|---|---|---|
+| `builder` | ✅ | ✅ | writes **and runs** code |
+| `architect` | ✅ | ❌ | designs & writes docs; **can't execute** — a `design.md` + a Mermaid diagram |
+
+The governance is **two layers**:
+
+- **Admission** — `persona` is an `enum` on the `Sandbox` XRD, so the apiserver rejects an unknown one
+  before anything runs. (A closed set belongs in the schema; the open-ended `image` string is what
+  Kyverno guards — right tool per shape.)
+- **Runtime** — the Composition renders the persona's OpenCode config as a ConfigMap mounted **read-only
+  at `/etc/opencode/`**, which OpenCode treats as *managed* config: highest precedence, **non-overridable**
+  by the user inside the pod. So `architect`'s `bash: deny` isn't advice — the agent has no `bash` tool,
+  and there's no `opencode.json` the user can write to grant one.
+
+The config is `permission` (the guardrail) + a system prompt (`persona.md`, referenced via OpenCode's
+`instructions`) + the model — authored as config-as-data in the Composition's KCL `_personas` catalog.
+`persona` and `image` are **mutually exclusive**: a claim carries one or the other and the Composition
+uses whichever is present. In the UI, personas are the **golden paths** — featured as tiles on the
+landing page with their `edit`/`bash` guardrails shown, while the raw-image flow lives behind the
+`Image` toggle in the create dialog.
+
+*Deliberately deferred:* per-persona **skills / MCP** and their **credentials** (the Identity plane) —
+the layer that makes a persona distinct beyond its permissions. A `researcher` persona waits for that
+(every sandbox already has open egress, so web access alone isn't a differentiator).
 
 ## Deployment (`deploy/`, Kustomize)
 
@@ -189,8 +222,9 @@ The **proper** shape (deferred — see *Next*) separates the two health question
   goes Ready — a beat before the *pod* is Running (an image pull can widen the gap). Clicking the
   terminal in that window returns a clean "pod not found", not a hang. A pod-aware readiness check would
   close it.
-- **Every sandbox gets the Zen key**, even a plain busybox one that ignores it. The tidy refinement is
-  opt-in (a `spec.agent` field), which is an XRD change — deferred.
+- **Every sandbox gets the Zen key** — the `ClusterExternalSecret` matches every sandbox namespace, so
+  even a raw busybox sandbox gets a key it ignores. Now that `persona` exists, gating the sync on it
+  (only persona sandboxes) is the tidy refinement — deferred.
 
 ## Verification (end-to-end, in-cluster)
 
@@ -213,6 +247,12 @@ kubectl exec -n temporal deploy/temporal-admintools -- \
 #   open the UI, click the sandbox, or drive the WebSocket directly.
 kubectl exec -n sandbox-<id> sandbox -c main -- \
   opencode run --model opencode/deepseek-v4-flash-free "say hi"   # authenticates via OPENCODE_API_KEY
+
+# A persona — its guardrails are enforced by managed config the agent can't override:
+curl -sX POST http://sandbox.localtest.me/sandboxes \
+  -H 'content-type: application/json' -d '{"owner":"ada","persona":"architect","ttl":300}'
+kubectl exec -n sandbox-<id> sandbox -c main -- opencode run "run the shell command ls"
+#   → architect refuses: no bash tool (bash: deny), and no local config can grant it
 ```
 
 To run the whole thing locally against the cluster: `kubectl port-forward -n temporal
@@ -226,7 +266,8 @@ sandbox_control_plane.app:app`, and `npm run dev` in `frontend/` (its `/api` pro
 - **Startup resilience** — lazy Temporal connect + `/healthz` readiness + split liveness + `503`s.
 - **Pod-aware readiness** — close the terminal-too-early race by having `running` reflect the pod, not
   just the claim.
-- **Opt-in agent** — a `spec.agent` field so only agent sandboxes get the Zen key and a default model.
+- **Per-persona skills & secrets** — MCP servers and their credentials (the Identity plane) per persona;
+  and gate the Zen-key sync on `persona` so raw sandboxes don't get it.
 
 ## References
 
