@@ -43,7 +43,7 @@ export function CreateSandboxDialog({
   const [size, setSize] = useState<Size>("small")
   const [persona, setPersona] = useState<Persona>("builder")
   const [image, setImage] = useState(IMAGES[0])
-  const [ttl, setTtl] = useState(120)
+  const [ttl, setTtl] = useState(300)
   const [busy, setBusy] = useState(false)
 
   // Opening from a persona tile preselects it; every open resets to persona mode.
