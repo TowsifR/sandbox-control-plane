@@ -13,8 +13,8 @@ export const PERSONAS: PersonaInfo[] = [
   {
     id: "architect",
     emoji: "📐",
-    blurb: "Designs systems, can't run code",
-    caps: { edit: true, bash: false },
+    blurb: "Designs systems (read-only, diagrams)",
+    caps: { edit: false, bash: false },
   },
 ]
 
