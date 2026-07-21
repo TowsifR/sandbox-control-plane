@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom"
-import { SquareTerminal, Trash2 } from "lucide-react"
+import { MessageSquare, SquareTerminal, Trash2 } from "lucide-react"
 
 import { Button, buttonVariants } from "@/components/ui/button"
 import {
@@ -13,6 +13,9 @@ import {
 import { StatusBadge } from "@/components/StatusBadge"
 import { personaById } from "@/lib/personas"
 import type { SandboxInfo } from "@/types"
+
+// Chat is offered only when the pod runs the opencode agent — a persona, or the opencode image directly.
+const chattable = (s: SandboxInfo) => s.persona != null || s.image === "sandbox-opencode:dev"
 
 export function SandboxTable({
   sandboxes,
@@ -62,6 +65,14 @@ export function SandboxTable({
               </TableCell>
               <TableCell className="text-right">
                 <div className="flex justify-end gap-1">
+                  {s.phase === "running" && chattable(s) && (
+                    <Link
+                      to={`/sandboxes/${s.id}/chat`}
+                      className={buttonVariants({ variant: "ghost", size: "sm" })}
+                    >
+                      <MessageSquare className="mr-1 size-4" /> Chat
+                    </Link>
+                  )}
                   {s.phase === "running" ? (
                     <Link
                       to={`/sandboxes/${s.id}/terminal`}
