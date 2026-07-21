@@ -2,8 +2,7 @@
 
 The control plane that makes Temporal actually *drive* the `kind: Sandbox` platform API. It turns
 "create a sandbox" into a **durable lifecycle workflow** — provision → wait-ready → live for a TTL →
-clean up — and then lets you **open a terminal into the running pod** (and run a coding agent in it)
-from a browser.
+clean up — and then lets you **open a terminal or chat with the agent** in the running pod, from a browser.
 
 It sits between two systems that already exist in the [`kubernetes-iac`](https://github.com/TowsifR/kubernetes-iac)
 platform:
@@ -16,7 +15,8 @@ browser UI ─┬─ HTTP ───▶ API ──▶ Temporal workflow ──▶
             │                         Crossplane Composition reconciles the bundle
             │                         (namespace · quota · limits · netpol · agent-sandbox pod)
             │                                                   │
-            └─ WebSocket ─▶ API ── pods/exec ──────────────────▶ shell in the pod (+ opencode agent)
+            ├─ WebSocket ─▶ API ── pods/exec ─────────────▶ shell in the pod
+            └─ HTTP + SSE ─▶ API ── pods/portforward ─────▶ opencode serve (chat)
 ```
 
 > **Temporal owns the *lifecycle*. Crossplane owns *reconciliation*.** This app never touches the
@@ -30,7 +30,7 @@ browser UI ─┬─ HTTP ───▶ API ──▶ Temporal workflow ──▶
 |---|---|---|
 | **API** (FastAPI) | `app.py` + `sandboxes/router.py` | create / list / get / delete sandboxes; the terminal WebSocket; Swagger UI at `/docs` |
 | **Worker** (Temporal) | `worker.py` | runs the `SandboxLifecycle` workflow and its Kubernetes activities |
-| **Frontend** (React + Vite) | `frontend/` | sandbox table, persona tiles + create dialog, and an xterm.js terminal |
+| **Frontend** (React + Vite) | `frontend/` | sandbox table, persona tiles + create dialog, an xterm.js terminal, and a chat surface |
 
 API and worker are the **same image**, run with a different command; both connect to Temporal, and the
 worker also polls the task queue. The frontend is a separate SPA that talks to the API over `/api`
@@ -133,9 +133,10 @@ needs a secure context, so it works on `localhost` and no-ops over plain-HTTP in
 ## Running the agent
 
 The sandbox image can be `sandbox-opencode` — [OpenCode](https://opencode.ai) on `node:22-slim` (plus
-`git` and `python`, so the agent can run what it writes), non-root, idling on `sleep infinity` so the
-control plane can exec `opencode` or a shell into it. It's the image every persona runs on (see
-**Personas** below). The platform delivers its API key without it ever touching git:
+`git` and `python`, so the agent can run what it writes), non-root. It's the image every persona runs on
+(see **Personas**), and it runs `opencode serve` as its main process (the chat backend — see **Chat**);
+the control plane still execs a shell into it for the terminal. Non-opencode images just idle on `sleep
+infinity`. The platform delivers its API key without it ever touching git:
 
 ```
 key → LocalStack Secrets Manager ──(ESO ClusterExternalSecret, per sandbox ns)──▶ Secret ──▶ OPENCODE_API_KEY
@@ -179,6 +180,33 @@ landing page with their `edit`/`bash` guardrails shown, while the raw-image flow
 the layer that makes a persona distinct beyond its permissions. A `researcher` persona waits for that
 (every sandbox already has open egress, so web access alone isn't a differentiator).
 
+## Chat (`sandboxes/chat.py`)
+
+The terminal gives you a shell; **chat** lets you *converse* with the agent and watch its reply stream in.
+It's offered for any **opencode** sandbox (a persona, or the opencode image picked directly); other images
+are terminal-only. The sandbox table is the console — click a sandbox's **Chat**. The agent is
+`opencode serve`, OpenCode's headless HTTP+SSE server, which each opencode pod runs as its main process on
+`localhost:4096`; the control plane proxies to it:
+
+- **Transport is `portforward`, not the apiserver pod-`proxy`.** Pod-proxy reaches the pod *over the pod
+  network*, so the sandbox's `default-deny-ingress` NetworkPolicy blocks it. Port-forward enters the pod's
+  network namespace and connects to `localhost` — bypassing the NetworkPolicy exactly like `exec`, so the
+  agent's port is never exposed. Needs `pods/portforward` on the sandbox RBAC.
+- **HTTP over the tunnel by hand.** Port-forward hands back a raw socket, so the proxy speaks HTTP with the
+  stdlib `http.client` over it (no `httpx`). `chat/sessions`, `…/prompt`, `…/messages` forward opencode's
+  JSON verbatim; `…/events` pipes its **SSE** stream straight through to the browser.
+- **The tunnel is flaky** — a fresh port-forward intermittently drops, hangs, or truncates a body. Every
+  call retries on a fresh tunnel with a short timeout (all calls are quick — a prompt returns at once, its
+  reply arriving over SSE), and `create_session` retries as a unit so a garbled body just tries again.
+- **Model pin.** `serve` runs sessions on its own default — a *paid* model the free Zen key rejects — and
+  ignores the config's `model`, so the proxy pins each session to the free `deepseek-v4-flash-free`. The
+  persona's managed config still governs *tools*, so chat is guardrailed like the terminal (architect
+  chat can't run bash).
+
+The frontend (`ChatPage`) tracks user messages locally (opencode doesn't echo the prompt) and treats each
+SSE event as a refresh signal — refetching the messages (cheap, ~40 ms). The reply isn't token-streamed
+(opencode emits it as one event), so a "thinking" indicator covers the model's latency.
+
 ## Deployment (`deploy/`, Kustomize)
 
 The app runs in `sandbox-system`; the `Sandbox` claims live in the claim namespace (`default`).
@@ -187,6 +215,7 @@ The app runs in `sandbox-system`; the `Sandbox` claims live in the claim namespa
 |---|---|---|
 | **RBAC (claims)** | SA in `sandbox-system`, namespaced `Role` in `default`, `RoleBinding` across | Least-privilege — the app can CRUD `Sandbox` claims in one namespace, **not** cluster-admin |
 | **RBAC (exec)** | static `ClusterRole` (platform side), bound per-sandbox by the Composition | Exec is scoped to sandbox namespaces and GC'd with them; a `ClusterRoleBinding` would grant a shell in *every* pod |
+| **RBAC (chat)** | `pods/portforward` on the same per-sandbox `ClusterRole` | Chat tunnels to the pod's `opencode serve` via port-forward — same scoping as exec, no network exposure |
 | **Config** | `configMapGenerator` (hash-suffixed) | Any config change mints a new name → updates Deployment refs → **auto rolling-restart** (a static ConfigMap + `envFrom` goes silently stale) |
 | **Image tag** | single-sourced in the `images:` block | bump/retag in one place; the Deployments carry no tag |
 | **Image pull** | `imagePullPolicy: IfNotPresent` | image is side-loaded via `kind load` (no registry); `Always` would try to pull and fail |
@@ -253,6 +282,11 @@ curl -sX POST http://sandbox.localtest.me/sandboxes \
   -H 'content-type: application/json' -d '{"owner":"ada","persona":"architect","ttl":300}'
 kubectl exec -n sandbox-<id> sandbox -c main -- opencode run "run the shell command ls"
 #   → architect refuses: no bash tool (bash: deny), and no local config can grant it
+
+# Chat — a session + prompt proxied to the pod's opencode serve over port-forward (reply streams via SSE):
+sid=$(curl -sX POST http://sandbox.localtest.me/sandboxes/<id>/chat/sessions | jq -r .data.id)
+curl -sX POST http://sandbox.localtest.me/sandboxes/<id>/chat/sessions/$sid/prompt \
+  -H 'content-type: application/json' -d '{"text":"say PONG"}'   # 200; watch .../events for the reply
 ```
 
 To run the whole thing locally against the cluster: `kubectl port-forward -n temporal
