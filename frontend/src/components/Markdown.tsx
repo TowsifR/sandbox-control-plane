@@ -1,11 +1,13 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
+import { Download } from "lucide-react"
 
 // Renders a ```mermaid block as an SVG. mermaid is imported lazily (~500KB) so it loads only once a diagram
 // appears; securityLevel "strict" blocks scripts/HTML in the agent-generated source, and a bad diagram falls back to its text.
 function Mermaid({ chart }: { chart: string }) {
   const ref = useRef<HTMLDivElement>(null)
+  const [svg, setSvg] = useState<string>() // set only on a successful render; gates the download button
   useEffect(() => {
     let alive = true
     void import("mermaid").then(async ({ default: mermaid }) => {
@@ -13,7 +15,10 @@ function Mermaid({ chart }: { chart: string }) {
       const id = "m" + Math.random().toString(36).slice(2)
       try {
         const { svg } = await mermaid.render(id, chart)
-        if (alive && ref.current) ref.current.innerHTML = svg
+        if (alive && ref.current) {
+          ref.current.innerHTML = svg
+          setSvg(svg)
+        }
       } catch {
         if (alive && ref.current) ref.current.textContent = chart
       }
@@ -22,7 +27,33 @@ function Mermaid({ chart }: { chart: string }) {
       alive = false
     }
   }, [chart])
-  return <div ref={ref} className="my-2 flex justify-center [&_svg]:max-w-full" />
+
+  // Save the diagram to disk — the sandbox is ephemeral, so this is how a design outlives it.
+  function download() {
+    if (!svg) return
+    const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }))
+    const a = document.createElement("a")
+    a.href = url
+    a.download = "diagram.svg"
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  return (
+    <div className="group relative my-2">
+      <div ref={ref} className="flex justify-center [&_svg]:max-w-full" />
+      {svg && (
+        <button
+          type="button"
+          onClick={download}
+          title="Download SVG"
+          className="absolute right-1 top-1 rounded p-1 text-muted-foreground opacity-0 transition hover:text-foreground group-hover:opacity-100"
+        >
+          <Download className="size-4" />
+        </button>
+      )}
+    </div>
+  )
 }
 
 // Markdown for assistant replies: real headings/lists/tables/code, plus rendered mermaid diagrams. The
