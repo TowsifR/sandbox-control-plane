@@ -17,9 +17,10 @@ from ..core.kubernetes import KubernetesClient
 
 _PORT = 4096
 _READ_SIZE = 8192
-# opencode serve otherwise runs sessions on its own default (a *paid* model the free Zen key rejects), so
-# we pin each new session to the persona's configured model — falling back to a free one when none is set.
-_FALLBACK_MODEL = "opencode/deepseek-v4-flash-free"
+_RETRIES = 4  # a fresh port-forward tunnel occasionally drops/hangs before the first response; retry fresh
+# opencode serve runs sessions on a paid model the free Zen key rejects, so we pin every session to this
+# free one. (All personas use it; a per-persona model would add a flaky /config port-forward round-trip.)
+_CHAT_MODEL = "opencode/deepseek-v4-flash-free"
 
 
 class _SocketConn(http.client.HTTPConnection):
@@ -56,9 +57,10 @@ async def request(
     method: str,
     path: str,
     body: dict | None = None,
-    timeout: float = 120.0,
+    timeout: float = 15.0,
 ) -> tuple[int, bytes]:
-    """One request/response round-trip to opencode serve (create/prompt/history)."""
+    """One request/response round-trip to opencode serve. Calls are quick (a prompt returns at once, its
+    reply arriving over the event stream), so the timeout is short and a hung tunnel is retried, not awaited."""
 
     def call() -> tuple[int, bytes]:
         api, pf, conn = _open(k8s, namespace, pod, timeout)
@@ -71,24 +73,34 @@ async def request(
         finally:
             _close(api, pf, conn)
 
-    return await asyncio.to_thread(call)
+    last: Exception | None = None
+    for _ in range(_RETRIES):
+        try:
+            return await asyncio.to_thread(call)
+        except (OSError, http.client.HTTPException) as e:  # tunnel dropped mid-request — retry on a fresh one
+            last = e
+            await asyncio.sleep(0.3)
+    raise last  # type: ignore[misc]
 
 
 async def create_session(k8s: KubernetesClient, namespace: str, pod: str) -> tuple[int, bytes]:
-    """Create a chat session and pin its model from `/config` (else `_FALLBACK_MODEL`) before the first
-    prompt — see `_FALLBACK_MODEL` for why serve needs the pin."""
-    status, data = await request(k8s, namespace, pod, "POST", "/api/session", body={})
-    if not 200 <= status < 300:
-        return status, data
-    session_id = json.loads(data)["data"]["id"]
-    _, cfg = await request(k8s, namespace, pod, "GET", "/config")
-    model = (json.loads(cfg).get("model") if cfg else None) or _FALLBACK_MODEL
-    provider, _, model_id = model.partition("/")  # "opencode/deepseek-v4-flash-free"
-    if provider and model_id:
+    """Create a chat session and pin its model (`_CHAT_MODEL`) before the first prompt. Retried as a unit:
+    a dropped tunnel can return a truncated body that won't parse, so a bad session id means try again."""
+    provider, _, model_id = _CHAT_MODEL.partition("/")  # "opencode/deepseek-v4-flash-free"
+    status, data = 502, b'{"detail":"agent unreachable"}'
+    for _ in range(_RETRIES):
+        status, data = await request(k8s, namespace, pod, "POST", "/api/session", body={})
+        if 400 <= status < 500:
+            return status, data  # a real rejection — retrying won't help
+        try:
+            session_id = json.loads(data)["data"]["id"]
+        except (ValueError, KeyError, TypeError):
+            continue  # truncated/garbled body — retry the whole create
         await request(
             k8s, namespace, pod, "POST", f"/api/session/{session_id}/model",
             body={"model": {"id": model_id, "providerID": provider}},
         )
+        return status, data
     return status, data
 
 

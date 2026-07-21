@@ -118,8 +118,8 @@ async def chat_prompt(
     ns, pod = await _chat_pod(service, sandbox_id)
     path = f"/api/session/{session_id}/prompt"
     body = {"prompt": {"text": prompt.text}}
-    # the model can take a while; the reply also streams over the events channel
-    return _json(await chat.request(get_kubernetes_client(), ns, pod, "POST", path, body, timeout=300.0))
+    # prompt returns as soon as it's accepted; the agent's reply arrives over the events stream
+    return _json(await chat.request(get_kubernetes_client(), ns, pod, "POST", path, body))
 
 
 @router.get("/{sandbox_id}/chat/sessions/{session_id}/events")
