@@ -16,6 +16,7 @@ export function ChatPage() {
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
   const [pending, setPending] = useState(false) // waiting on the agent's reply — drives the typing dots
+  const [gone, setGone] = useState(false) // pod vanished (TTL-expired) — stop the typing indicator, tell the user
   const endRef = useRef<HTMLDivElement>(null)
 
   // Merge the server's assistant messages by id (so a streaming reply updates in place), keeping the
@@ -37,13 +38,25 @@ export function ChatPage() {
     if (!id) return
     let es: EventSource | undefined
     let cancelled = false
+    const markGone = () => {
+      if (cancelled) return
+      setGone(true)
+      setPending(false)
+    }
     chat
       .createSession(id)
       .then((sid) => {
         if (cancelled) return
         setSessionId(sid)
         es = chat.events(id, sid)
-        es.onmessage = () => chat.messages(id, sid).then(mergeAssistants).catch(() => {})
+        es.onmessage = () =>
+          chat.messages(id, sid).then(mergeAssistants).catch((e) => {
+            if (String(e?.message) === "404") markGone()
+          })
+        // A non-200 from the event stream (pod gone) closes it for good; a transient blip reconnects.
+        es.onerror = () => {
+          if (es?.readyState === EventSource.CLOSED) markGone()
+        }
       })
       .catch(() => {
         if (!cancelled) setError("Couldn't reach the agent — make sure the sandbox is running.")
@@ -103,7 +116,7 @@ export function ChatPage() {
               </div>
             </div>
           ))}
-          {pending && (
+          {pending && !gone && (
             <div className="flex justify-start">
               <div className="flex gap-1 rounded-lg bg-muted px-3 py-3">
                 {[0, 1, 2].map((i) => (
@@ -115,6 +128,11 @@ export function ChatPage() {
                 ))}
               </div>
             </div>
+          )}
+          {gone && (
+            <p className="text-center text-sm text-destructive">
+              This sandbox has expired — create a new one to keep chatting.
+            </p>
           )}
           <div ref={endRef} />
         </div>
@@ -131,10 +149,10 @@ export function ChatPage() {
           <Input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={sessionId ? "Message the agent…" : "Connecting…"}
-            disabled={!sessionId}
+            placeholder={gone ? "Sandbox expired" : sessionId ? "Message the agent…" : "Connecting…"}
+            disabled={!sessionId || gone}
           />
-          <Button type="submit" size="icon" disabled={!sessionId || !input.trim() || busy}>
+          <Button type="submit" size="icon" disabled={!sessionId || gone || !input.trim() || busy}>
             <Send className="size-4" />
           </Button>
         </form>

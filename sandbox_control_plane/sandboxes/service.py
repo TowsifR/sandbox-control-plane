@@ -2,6 +2,7 @@ import asyncio
 import secrets
 
 from temporalio.client import Client
+from temporalio.service import RPCError, RPCStatusCode
 
 from ..core.config import get_settings
 from .gateway import SandboxGateway
@@ -44,7 +45,13 @@ class SandboxService:
     async def delete(self, sandbox_id: str) -> None:
         # Signal the workflow to expire early; its cleanup deletes the claim.
         handle = self._client.get_workflow_handle(sandbox_id)
-        await handle.signal(SandboxLifecycle.request_delete)
+        try:
+            await handle.signal(SandboxLifecycle.request_delete)
+        except RPCError as e:
+            # Workflow already finished (e.g. TTL expired first), so its cleanup already ran and the
+            # sandbox is gone — deleting an already-gone sandbox is a no-op, not a 500.
+            if e.status is not RPCStatusCode.NOT_FOUND:
+                raise
 
     async def pod_name(self, sandbox_id: str, namespace: str) -> str | None:
         return await asyncio.to_thread(self._gateway.pod_name, namespace, sandbox_id)

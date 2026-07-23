@@ -43,8 +43,9 @@ export function CreateSandboxDialog({
   const [size, setSize] = useState<Size>("small")
   const [persona, setPersona] = useState<Persona>("builder")
   const [image, setImage] = useState(IMAGES[0])
-  const [ttl, setTtl] = useState(300)
+  const [ttl, setTtl] = useState(1800) // 30 min — long enough to actually converse with a slow agent
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string>()
 
   // Opening from a persona tile preselects it; every open resets to persona mode.
   useEffect(() => {
@@ -59,12 +60,16 @@ export function CreateSandboxDialog({
   async function submit(e: FormEvent) {
     e.preventDefault()
     setBusy(true)
+    setError(undefined)
     try {
       // Send exactly one of persona/image — the platform uses whichever is present.
       await api.create({ owner, size, ttl, ...(mode === "persona" ? { persona } : { image }) })
       onOpenChange(false)
       setOwner("")
       onCreated()
+    } catch (err) {
+      // Surface the failure instead of silently resetting — otherwise a dead backend looks like nothing happened.
+      setError(err instanceof Error ? err.message : "Failed to create sandbox")
     } finally {
       setBusy(false)
     }
@@ -162,6 +167,7 @@ export function CreateSandboxDialog({
               onChange={(e) => setTtl(Number(e.target.value))}
             />
           </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
           <DialogFooter>
             <Button type="submit" disabled={busy || !owner}>
               {busy ? "Creating…" : "Create"}
